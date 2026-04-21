@@ -24,7 +24,7 @@
        <item row="0" column="0">
         <widget class="QLabel" name="address_label">
          <property name="text">
-          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:16pt;&quot;&gt;АДРЕС&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:16pt;&quot;&gt;Адрес&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
          </property>
         </widget>
        </item>
@@ -35,12 +35,21 @@
            <pointsize>16</pointsize>
           </font>
          </property>
+         <property name="text">
+          <string>127.0.0.1</string>
+         </property>
+         <property name="maxLength">
+          <number>32778</number>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignCenter</set>
+         </property>
         </widget>
        </item>
        <item row="1" column="0">
         <widget class="QLabel" name="port_label">
          <property name="text">
-          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:16pt;&quot;&gt;ПОРТ&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:16pt;&quot;&gt;Порт&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
          </property>
         </widget>
        </item>
@@ -50,6 +59,15 @@
           <font>
            <pointsize>16</pointsize>
           </font>
+         </property>
+         <property name="text">
+          <string>8888</string>
+         </property>
+         <property name="maxLength">
+          <number>32778</number>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignCenter</set>
          </property>
         </widget>
        </item>
@@ -62,11 +80,11 @@
        <widget class="QPushButton" name="startListening_button">
         <property name="font">
          <font>
-          <pointsize>16</pointsize>
+          <pointsize>14</pointsize>
          </font>
         </property>
         <property name="text">
-         <string>START</string>
+         <string>НАЧАТЬ ПРОСЛУШИВАНИЕ</string>
         </property>
        </widget>
       </item>
@@ -74,11 +92,11 @@
        <widget class="QPushButton" name="stopListening_button">
         <property name="font">
          <font>
-          <pointsize>16</pointsize>
+          <pointsize>14</pointsize>
          </font>
         </property>
         <property name="text">
-         <string>STOP</string>
+         <string>ОСТАНОВИТЬ ПРОСЛУШИВАНИЕ</string>
         </property>
        </widget>
       </item>
@@ -91,7 +109,7 @@
       </property>
       <layout class="QHBoxLayout" name="horizontalLayout_2">
        <item>
-        <widget class="QTextEdit" name="serverLog_textEdit">
+        <widget class="QPlainTextEdit" name="serverLog_plainTextEdit">
          <property name="enabled">
           <bool>false</bool>
          </property>
