@@ -7,19 +7,12 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    initializeUi();
 }
 
+//--------------------------------------------------------------------------
 
 MainWindow::~MainWindow()
 {
     delete ui;
 }
 
-
-//--------------------------------------------------------------------------
-
-void MainWindow::initializeUi()
-{
-    setWindowTitle(QStringLiteral("Lab5 Tcp Server"));
-}
