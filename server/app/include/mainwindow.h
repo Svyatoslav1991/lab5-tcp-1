@@ -9,6 +9,8 @@ class MainWindow;
 }
 QT_END_NAMESPACE
 
+class QCloseEvent;
+
 /*!
  * \class MainWindow
  * \brief Главное окно TCP-сервера для лабораторной работы №5.
@@ -34,11 +36,46 @@ public:
      */
     ~MainWindow() override;
 
+protected:
+    /*!
+     * \brief Обрабатывает закрытие окна.
+     * \param event Событие закрытия.
+     *
+     * \details
+     * Перед закрытием окна сохраняет текущие настройки интерфейса.
+     */
+    void closeEvent(QCloseEvent *event) override;
+
 private:
     /*!
      * \brief Выполняет базовую инициализацию интерфейса.
+     *
+     * \details
+     * На данном этапе метод:
+     * - задаёт значения по умолчанию для адреса и порта;
+     * - настраивает валидаторы для полей ввода;
+     * - переводит поле лога в режим только для чтения;
+     * - загружает ранее сохранённые настройки.
      */
     void initializeUi();
+
+    /*!
+     * \brief Настраивает сигналы интерфейса.
+     */
+    void connectSignals();
+
+    /*!
+     * \brief Загружает сохранённые адрес и порт из QSettings.
+     */
+    void loadSettings();
+
+    /*!
+     * \brief Сохраняет текущие адрес и порт в QSettings.
+     *
+     * \details
+     * Сохраняются только корректные значения, прошедшие валидацию.
+     */
+    void saveSettings();
 
 private:
     Ui::MainWindow *ui = nullptr;
