@@ -15,6 +15,7 @@ QT_END_NAMESPACE
 
 class QCloseEvent;
 class QTcpSocket;
+class QTimer;
 
 /*!
  * \class MainWindow
@@ -31,7 +32,9 @@ class QTcpSocket;
  * - сохранение пользовательских настроек через QSettings;
  * - асинхронное подключение и отключение;
  * - обработка connected/disconnected/stateChanged/errorOccurred;
- * - пакетный обмен через QDataStream в режиме 1;
+ * - пакетный обмен через QDataStream;
+ * - режим 1: ручная отправка пакетов;
+ * - режим 2: периодическая отправка пакетов по QTimer;
  * - вывод изменений состояния сокета в qDebug().
  */
 class MainWindow : public QMainWindow
@@ -73,9 +76,14 @@ private slots:
     void onDisconnectClicked();
 
     /*!
-     * \brief Обрабатывает нажатие кнопки отправки пакета.
+     * \brief Обрабатывает нажатие кнопки отправки/запуска режима отправки.
      */
     void onWriteClicked();
+
+    /*!
+     * \brief Обрабатывает нажатие кнопки остановки периодической отправки.
+     */
+    void onStopClicked();
 
     /*!
      * \brief Обрабатывает успешное подключение к серверу.
@@ -104,6 +112,11 @@ private slots:
      */
     void onSocketErrorOccurred(QAbstractSocket::SocketError socketError);
 
+    /*!
+     * \brief Обрабатывает периодическое срабатывание таймера отправки.
+     */
+    void onSendTimerTimeout();
+
 private:
     /*!
      * \brief Выполняет базовую инициализацию интерфейса.
@@ -111,7 +124,7 @@ private:
     void initializeUi();
 
     /*!
-     * \brief Настраивает сигналы и слоты интерфейса и сокета.
+     * \brief Настраивает сигналы и слоты интерфейса, сокета и таймера.
      */
     void connectSignals();
 
@@ -132,7 +145,7 @@ private:
     void appendLog(const QString &message);
 
     /*!
-     * \brief Обновляет доступность элементов управления в зависимости от состояния сокета.
+     * \brief Обновляет доступность элементов управления в зависимости от состояния сокета и режима.
      */
     void updateConnectionControls();
 
@@ -143,6 +156,13 @@ private:
      * \return true, если параметры корректны, иначе false.
      */
     bool tryGetConnectionParameters(QHostAddress &address, quint16 &port) const;
+
+    /*!
+     * \brief Проверяет и разбирает timeout из интерфейса.
+     * \param timeoutMs Выходной timeout в миллисекундах.
+     * \return true, если timeout корректен, иначе false.
+     */
+    bool tryGetTimeout(int &timeoutMs) const;
 
     /*!
      * \brief Возвращает строковое представление состояния сокета.
@@ -195,12 +215,21 @@ private:
                               QString &text,
                               QTime &serverTime) const;
 
+    /*!
+     * \brief Отправляет один пакет серверу.
+     * \param text Строковое поле пакета.
+     * \return true, если пакет поставлен в очередь на отправку, иначе false.
+     */
+    bool sendPacket(const QString &text);
+
 private:
     Ui::MainWindow *ui = nullptr;
     QTcpSocket *socket_ = nullptr;
+    QTimer *sendTimer_ = nullptr;
     QByteArray socketReadBuffer_;
     quint32 pendingServerBlockSize_ = 0;
     quint32 nextRequestNumber_ = 1;
+    QString periodicMessageText_;
 };
 
 #endif // MAINWINDOW_H
