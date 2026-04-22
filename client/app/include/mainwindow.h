@@ -1,9 +1,11 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QMainWindow>
 #include <QAbstractSocket>
+#include <QByteArray>
 #include <QHostAddress>
+#include <QMainWindow>
+#include <QTime>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -29,9 +31,8 @@ class QTcpSocket;
  * - сохранение пользовательских настроек через QSettings;
  * - асинхронное подключение и отключение;
  * - обработка connected/disconnected/stateChanged/errorOccurred;
+ * - пакетный обмен через QDataStream в режиме 1;
  * - вывод изменений состояния сокета в qDebug().
- *
- * Кнопки write и stop пока зарезервированы под задание 3.
  */
 class MainWindow : public QMainWindow
 {
@@ -72,6 +73,11 @@ private slots:
     void onDisconnectClicked();
 
     /*!
+     * \brief Обрабатывает нажатие кнопки отправки пакета.
+     */
+    void onWriteClicked();
+
+    /*!
      * \brief Обрабатывает успешное подключение к серверу.
      */
     void onSocketConnected();
@@ -80,6 +86,11 @@ private slots:
      * \brief Обрабатывает отключение от сервера.
      */
     void onSocketDisconnected();
+
+    /*!
+     * \brief Обрабатывает готовность данных для чтения.
+     */
+    void onSocketReadyRead();
 
     /*!
      * \brief Обрабатывает изменение состояния сокета.
@@ -147,9 +158,49 @@ private:
      */
     QString socketErrorToString(QAbstractSocket::SocketError socketError) const;
 
+    /*!
+     * \brief Обрабатывает накопленный входной буфер сокета.
+     */
+    void processSocketBuffer();
+
+    /*!
+     * \brief Формирует кадр клиентского запроса.
+     * \param number Числовое поле пакета.
+     * \param text Строковое поле пакета.
+     * \return Готовый бинарный кадр для отправки серверу.
+     */
+    QByteArray buildRequestFrame(quint32 number, const QString &text) const;
+
+    /*!
+     * \brief Пытается извлечь один полный кадр из накопленного буфера.
+     * \param buffer Буфер входных байтов.
+     * \param pendingBlockSize Ожидаемый размер полезной нагрузки.
+     * \param payload Выходная полезная нагрузка кадра.
+     * \return true, если удалось извлечь полный кадр, иначе false.
+     */
+    bool tryExtractFrame(QByteArray &buffer,
+                         quint32 &pendingBlockSize,
+                         QByteArray &payload);
+
+    /*!
+     * \brief Разбирает полезную нагрузку серверного ответа.
+     * \param payload Бинарная полезная нагрузка.
+     * \param number Выходное числовое поле.
+     * \param text Выходное строковое поле.
+     * \param serverTime Выходное поле времени сервера.
+     * \return true, если пакет успешно разобран, иначе false.
+     */
+    bool parseResponsePayload(const QByteArray &payload,
+                              quint32 &number,
+                              QString &text,
+                              QTime &serverTime) const;
+
 private:
     Ui::MainWindow *ui = nullptr;
     QTcpSocket *socket_ = nullptr;
+    QByteArray socketReadBuffer_;
+    quint32 pendingServerBlockSize_ = 0;
+    quint32 nextRequestNumber_ = 1;
 };
 
 #endif // MAINWINDOW_H

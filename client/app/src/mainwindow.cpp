@@ -2,6 +2,7 @@
 #include "ui_mainwindow.h"
 
 #include <QCloseEvent>
+#include <QDataStream>
 #include <QDateTime>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -29,6 +30,11 @@ const QString kSessionModeKey = QStringLiteral("session_mode");
 const QString kSingleMode = QStringLiteral("single");
 const QString kLongMode = QStringLiteral("long");
 const QString kShortMode = QStringLiteral("short");
+
+constexpr int kFrameHeaderSize = static_cast<int>(sizeof(quint32));
+constexpr quint32 kMaxFramePayloadSize = 1024 * 1024;
+
+const QDataStream::Version kStreamVersion = QDataStream::Qt_5_12;
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -102,11 +108,16 @@ void MainWindow::initializeUi()
     ui->timeout_lineEdit->setText(kDefaultTimeout);
 
     ui->clientLog_plainTextEdit->setReadOnly(true);
-
     ui->single_radioButton->setChecked(true);
 
     loadSettings();
     updateConnectionControls();
+
+    ui->single_radioButton->setEnabled(false);
+    ui->long_radioButton->setEnabled(false);
+    ui->short_radioButton->setEnabled(false);
+    ui->timeout_lineEdit->setEnabled(false);
+    ui->stop_pushButton->setEnabled(false);
 
     statusBar()->showMessage(QStringLiteral("Клиент не подключен"));
 }
@@ -139,11 +150,20 @@ void MainWindow::connectSignals()
     connect(ui->disconnect_pushButton, &QPushButton::clicked,
             this, &MainWindow::onDisconnectClicked);
 
+    connect(ui->write_pushButton, &QPushButton::clicked,
+            this, &MainWindow::onWriteClicked);
+
+    connect(ui->message_lineEdit, &QLineEdit::returnPressed,
+            this, &MainWindow::onWriteClicked);
+
     connect(socket_, &QTcpSocket::connected,
             this, &MainWindow::onSocketConnected);
 
     connect(socket_, &QTcpSocket::disconnected,
             this, &MainWindow::onSocketDisconnected);
+
+    connect(socket_, &QTcpSocket::readyRead,
+            this, &MainWindow::onSocketReadyRead);
 
     connect(socket_, &QTcpSocket::stateChanged,
             this, &MainWindow::onSocketStateChanged);
@@ -197,6 +217,8 @@ void MainWindow::loadSettings()
     } else {
         ui->single_radioButton->setChecked(true);
     }
+
+    ui->single_radioButton->setChecked(true);
 }
 
 //--------------------------------------------------------------------------
@@ -252,14 +274,19 @@ void MainWindow::updateConnectionControls()
 
     ui->connect_pushButton->setEnabled(isUnconnected);
     ui->disconnect_pushButton->setEnabled(!isUnconnected);
-
-    ui->write_pushButton->setEnabled(false);
-    ui->stop_pushButton->setEnabled(false);
+    ui->write_pushButton->setEnabled(isConnected);
+    ui->message_lineEdit->setEnabled(isConnected);
 
     ui->address_lineEdit->setEnabled(isUnconnected);
     ui->port_lineEdit->setEnabled(isUnconnected);
 
-    if (!isConnected) {
+    if (isConnected) {
+        statusBar()->showMessage(QStringLiteral("Клиент подключен к серверу"));
+    } else if (state == QAbstractSocket::ConnectingState) {
+        statusBar()->showMessage(QStringLiteral("Подключение к серверу..."));
+    } else if (state == QAbstractSocket::ClosingState) {
+        statusBar()->showMessage(QStringLiteral("Отключение от сервера..."));
+    } else {
         statusBar()->showMessage(QStringLiteral("Клиент не подключен"));
     }
 }
@@ -349,6 +376,107 @@ QString MainWindow::socketErrorToString(QAbstractSocket::SocketError socketError
 
 //--------------------------------------------------------------------------
 
+QByteArray MainWindow::buildRequestFrame(quint32 number, const QString &text) const
+{
+    QByteArray payload;
+    QDataStream payloadStream(&payload, QIODevice::WriteOnly);
+    payloadStream.setVersion(kStreamVersion);
+    payloadStream << number << text;
+
+    QByteArray frame;
+    QDataStream frameStream(&frame, QIODevice::WriteOnly);
+    frameStream.setVersion(kStreamVersion);
+    frameStream << static_cast<quint32>(payload.size());
+
+    frame.append(payload);
+
+    return frame;
+}
+
+//--------------------------------------------------------------------------
+
+bool MainWindow::tryExtractFrame(QByteArray &buffer,
+                                 quint32 &pendingBlockSize,
+                                 QByteArray &payload)
+{
+    payload.clear();
+
+    if (pendingBlockSize == 0) {
+        if (buffer.size() < kFrameHeaderSize) {
+            return false;
+        }
+
+        QByteArray headerData = buffer.left(kFrameHeaderSize);
+        QDataStream headerStream(&headerData, QIODevice::ReadOnly);
+        headerStream.setVersion(kStreamVersion);
+        headerStream >> pendingBlockSize;
+
+        if (pendingBlockSize == 0 || pendingBlockSize > kMaxFramePayloadSize) {
+            appendLog(QStringLiteral("Получен некорректный размер пакета, входной буфер очищен"));
+            buffer.clear();
+            pendingBlockSize = 0;
+            return false;
+        }
+    }
+
+    const int fullFrameSize = kFrameHeaderSize + static_cast<int>(pendingBlockSize);
+
+    if (buffer.size() < fullFrameSize) {
+        return false;
+    }
+
+    payload = buffer.mid(kFrameHeaderSize, static_cast<int>(pendingBlockSize));
+    buffer.remove(0, fullFrameSize);
+    pendingBlockSize = 0;
+
+    return true;
+}
+
+//--------------------------------------------------------------------------
+
+bool MainWindow::parseResponsePayload(const QByteArray &payload,
+                                      quint32 &number,
+                                      QString &text,
+                                      QTime &serverTime) const
+{
+    QByteArray payloadCopy = payload;
+    QDataStream payloadStream(&payloadCopy, QIODevice::ReadOnly);
+    payloadStream.setVersion(kStreamVersion);
+
+    payloadStream >> number >> text >> serverTime;
+
+    return payloadStream.status() == QDataStream::Ok;
+}
+
+//--------------------------------------------------------------------------
+
+void MainWindow::processSocketBuffer()
+{
+    while (true) {
+        QByteArray payload;
+
+        if (!tryExtractFrame(socketReadBuffer_, pendingServerBlockSize_, payload)) {
+            break;
+        }
+
+        quint32 number = 0;
+        QString text;
+        QTime serverTime;
+
+        if (!parseResponsePayload(payload, number, text, serverTime)) {
+            appendLog(QStringLiteral("Не удалось разобрать пакет ответа сервера"));
+            continue;
+        }
+
+        appendLog(QStringLiteral("Получен пакет-ответ: number=%1, text=\"%2\", time=%3")
+                  .arg(number)
+                  .arg(text)
+                  .arg(serverTime.toString(QStringLiteral("HH:mm:ss"))));
+    }
+}
+
+//--------------------------------------------------------------------------
+
 void MainWindow::onConnectClicked()
 {
     QHostAddress address;
@@ -369,8 +497,6 @@ void MainWindow::onConnectClicked()
               .arg(address.toString())
               .arg(port));
 
-    statusBar()->showMessage(QStringLiteral("Подключение к серверу..."));
-
     socket_->connectToHost(address, port);
     updateConnectionControls();
 }
@@ -390,13 +516,51 @@ void MainWindow::onDisconnectClicked()
 
 //--------------------------------------------------------------------------
 
+void MainWindow::onWriteClicked()
+{
+    if (socket_->state() != QAbstractSocket::ConnectedState) {
+        return;
+    }
+
+    const QString text = ui->message_lineEdit->text().trimmed();
+
+    if (text.isEmpty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Пустое сообщение"),
+            QStringLiteral("Введите строку для отправки.")
+        );
+        return;
+    }
+
+    const quint32 requestNumber = nextRequestNumber_++;
+    const QByteArray frame = buildRequestFrame(requestNumber, text);
+
+    const qint64 written = socket_->write(frame);
+
+    if (written == -1) {
+        appendLog(QStringLiteral("Не удалось отправить пакет: %1").arg(socket_->errorString()));
+        return;
+    }
+
+    appendLog(QStringLiteral("Отправлен пакет: number=%1, text=\"%2\"")
+              .arg(requestNumber)
+              .arg(text));
+
+    ui->message_lineEdit->clear();
+}
+
+//--------------------------------------------------------------------------
+
 void MainWindow::onSocketConnected()
 {
+    socketReadBuffer_.clear();
+    pendingServerBlockSize_ = 0;
+
     appendLog(QStringLiteral("Подключение к серверу установлено: %1:%2")
               .arg(socket_->peerAddress().toString())
               .arg(socket_->peerPort()));
 
-    statusBar()->showMessage(QStringLiteral("Клиент подключен к серверу"));
     updateConnectionControls();
 
     qDebug() << "CLIENT: connected to server"
@@ -408,11 +572,21 @@ void MainWindow::onSocketConnected()
 
 void MainWindow::onSocketDisconnected()
 {
+    socketReadBuffer_.clear();
+    pendingServerBlockSize_ = 0;
+
     appendLog(QStringLiteral("Соединение с сервером закрыто"));
-    statusBar()->showMessage(QStringLiteral("Клиент отключен от сервера"));
     updateConnectionControls();
 
     qDebug() << "CLIENT: disconnected";
+}
+
+//--------------------------------------------------------------------------
+
+void MainWindow::onSocketReadyRead()
+{
+    socketReadBuffer_.append(socket_->readAll());
+    processSocketBuffer();
 }
 
 //--------------------------------------------------------------------------
@@ -427,9 +601,7 @@ void MainWindow::onSocketStateChanged(QAbstractSocket::SocketState socketState)
 
 void MainWindow::onSocketErrorOccurred(QAbstractSocket::SocketError socketError)
 {
-    const QString errorText = socketErrorToString(socketError);
-
-    qDebug() << "CLIENT: socket error =" << errorText
+    qDebug() << "CLIENT: socket error =" << socketErrorToString(socketError)
              << "|" << socket_->errorString();
 
     if (socketError != QAbstractSocket::RemoteHostClosedError) {

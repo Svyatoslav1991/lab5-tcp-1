@@ -2,9 +2,11 @@
 #include "ui_mainwindow.h"
 
 #include <QCloseEvent>
+#include <QDataStream>
 #include <QDateTime>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QSettings>
@@ -21,6 +23,11 @@ const QString kDefaultPort = QStringLiteral("8888");
 const QString kSettingsGroup = QStringLiteral("server");
 const QString kAddressKey = QStringLiteral("address");
 const QString kPortKey = QStringLiteral("port");
+
+constexpr int kFrameHeaderSize = static_cast<int>(sizeof(quint32));
+constexpr quint32 kMaxFramePayloadSize = 1024 * 1024;
+
+const QDataStream::Version kStreamVersion = QDataStream::Qt_5_12;
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -270,6 +277,9 @@ QString MainWindow::socketErrorToString(QAbstractSocket::SocketError socketError
 
 void MainWindow::resetClientSocket()
 {
+    clientReadBuffer_.clear();
+    pendingClientBlockSize_ = 0;
+
     if (!clientSocket_) {
         return;
     }
@@ -282,6 +292,127 @@ void MainWindow::resetClientSocket()
 
     clientSocket_->deleteLater();
     clientSocket_.clear();
+}
+
+//--------------------------------------------------------------------------
+
+QByteArray MainWindow::buildResponseFrame(quint32 number,
+                                          const QString &text,
+                                          const QTime &serverTime) const
+{
+    QByteArray payload;
+    QDataStream payloadStream(&payload, QIODevice::WriteOnly);
+    payloadStream.setVersion(kStreamVersion);
+    payloadStream << number << text << serverTime;
+
+    QByteArray frame;
+    QDataStream frameStream(&frame, QIODevice::WriteOnly);
+    frameStream.setVersion(kStreamVersion);
+    frameStream << static_cast<quint32>(payload.size());
+
+    frame.append(payload);
+
+    return frame;
+}
+
+//--------------------------------------------------------------------------
+
+bool MainWindow::tryExtractFrame(QByteArray &buffer,
+                                 quint32 &pendingBlockSize,
+                                 QByteArray &payload)
+{
+    payload.clear();
+
+    if (pendingBlockSize == 0) {
+        if (buffer.size() < kFrameHeaderSize) {
+            return false;
+        }
+
+        QByteArray headerData = buffer.left(kFrameHeaderSize);
+        QDataStream headerStream(&headerData, QIODevice::ReadOnly);
+        headerStream.setVersion(kStreamVersion);
+        headerStream >> pendingBlockSize;
+
+        if (pendingBlockSize == 0 || pendingBlockSize > kMaxFramePayloadSize) {
+            appendLog(QStringLiteral("Получен некорректный размер пакета, входной буфер очищен"));
+            buffer.clear();
+            pendingBlockSize = 0;
+            return false;
+        }
+    }
+
+    const int fullFrameSize = kFrameHeaderSize + static_cast<int>(pendingBlockSize);
+
+    if (buffer.size() < fullFrameSize) {
+        return false;
+    }
+
+    payload = buffer.mid(kFrameHeaderSize, static_cast<int>(pendingBlockSize));
+    buffer.remove(0, fullFrameSize);
+    pendingBlockSize = 0;
+
+    return true;
+}
+
+//--------------------------------------------------------------------------
+
+bool MainWindow::parseRequestPayload(const QByteArray &payload,
+                                     quint32 &number,
+                                     QString &text) const
+{
+    QByteArray payloadCopy = payload;
+    QDataStream payloadStream(&payloadCopy, QIODevice::ReadOnly);
+    payloadStream.setVersion(kStreamVersion);
+
+    payloadStream >> number >> text;
+
+    return payloadStream.status() == QDataStream::Ok;
+}
+
+//--------------------------------------------------------------------------
+
+void MainWindow::processClientBuffer()
+{
+    while (true) {
+        QByteArray payload;
+
+        if (!tryExtractFrame(clientReadBuffer_, pendingClientBlockSize_, payload)) {
+            break;
+        }
+
+        quint32 number = 0;
+        QString text;
+
+        if (!parseRequestPayload(payload, number, text)) {
+            appendLog(QStringLiteral("Не удалось разобрать пакет клиента"));
+            continue;
+        }
+
+        appendLog(QStringLiteral("Получен пакет: number=%1, text=\"%2\"")
+                  .arg(number)
+                  .arg(text));
+
+        const QTime currentTime = QTime::currentTime();
+        const QByteArray responseFrame = buildResponseFrame(number, text, currentTime);
+
+        if (!clientSocket_) {
+            appendLog(QStringLiteral("Активный клиент отсутствует, ответ не отправлен"));
+            continue;
+        }
+
+        const qint64 written = clientSocket_->write(responseFrame);
+
+        if (written == -1) {
+            appendLog(QStringLiteral("Не удалось отправить пакет-ответ: %1")
+                      .arg(clientSocket_->errorString()));
+            continue;
+        }
+
+        appendLog(QStringLiteral("Отправлен пакет-ответ: number=%1, text=\"%2\", time=%3")
+                  .arg(number)
+                  .arg(text)
+                  .arg(currentTime.toString(QStringLiteral("HH:mm:ss"))));
+    }
 }
 
 //--------------------------------------------------------------------------
@@ -363,6 +494,11 @@ void MainWindow::onNewConnection()
         }
 
         clientSocket_ = pendingSocket;
+        clientReadBuffer_.clear();
+        pendingClientBlockSize_ = 0;
+
+        connect(clientSocket_, &QTcpSocket::readyRead,
+                this, &MainWindow::onClientReadyRead);
 
         connect(clientSocket_, &QTcpSocket::disconnected,
                 this, &MainWindow::onClientDisconnected);
@@ -394,22 +530,41 @@ void MainWindow::onNewConnection()
 
 //--------------------------------------------------------------------------
 
-void MainWindow::onClientDisconnected()
+void MainWindow::onClientReadyRead()
 {
     if (!clientSocket_) {
         return;
     }
 
+    clientReadBuffer_.append(clientSocket_->readAll());
+    processClientBuffer();
+}
+
+//--------------------------------------------------------------------------
+
+void MainWindow::onClientDisconnected()
+{
+    QString peerAddress = QStringLiteral("<unknown>");
+    quint16 peerPort = 0;
+
+    if (clientSocket_) {
+        peerAddress = clientSocket_->peerAddress().toString();
+        peerPort = clientSocket_->peerPort();
+    }
+
     appendLog(QStringLiteral("Клиент отключился: %1:%2")
-              .arg(clientSocket_->peerAddress().toString())
-              .arg(clientSocket_->peerPort()));
+              .arg(peerAddress)
+              .arg(peerPort));
 
     qDebug() << "SERVER: client disconnected";
 
-    clientSocket_->deleteLater();
-    clientSocket_.clear();
+    resetClientSocket();
 
-    statusBar()->showMessage(QStringLiteral("Клиент отключён"));
+    if (server_->isListening()) {
+        statusBar()->showMessage(QStringLiteral("Сервер прослушивает порт"));
+    } else {
+        statusBar()->showMessage(QStringLiteral("Сервер не запущен"));
+    }
 }
 
 //--------------------------------------------------------------------------
@@ -425,9 +580,9 @@ void MainWindow::onClientErrorOccurred(QAbstractSocket::SocketError socketError)
 {
     qDebug() << "SERVER: client socket error =" << socketErrorToString(socketError);
 
-    if (socketError != QAbstractSocket::RemoteHostClosedError) {
+    if (socketError != QAbstractSocket::RemoteHostClosedError && clientSocket_) {
         appendLog(QStringLiteral("Ошибка клиентского сокета: %1")
-                  .arg(socketErrorToString(socketError)));
+                  .arg(clientSocket_->errorString()));
     }
 }
 
