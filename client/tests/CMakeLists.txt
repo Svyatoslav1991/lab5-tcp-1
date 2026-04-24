@@ -1,7 +1,8 @@
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Network Test)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Network Test)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets Network Test)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Network Test)
 
 add_executable(test_sessionmode
     test_sessionmode.cpp
@@ -81,3 +82,32 @@ target_link_libraries(test_packetprotocol
 )
 
 add_test(NAME test_packetprotocol COMMAND test_packetprotocol)
+
+add_executable(test_mainwindow
+    test_mainwindow.cpp
+    ../app/src/mainwindow.cpp
+    ../app/src/mainwindow.ui
+    ../app/include/mainwindow.h
+    ../app/src/clientcontroller.cpp
+    ../app/include/clientcontroller.h
+    ../app/src/clientsettings.cpp
+    ../app/include/clientsettings.h
+    ../app/src/packetprotocol.cpp
+    ../app/include/packetprotocol.h
+    ../app/include/sessionmode.h
+)
+
+target_include_directories(test_mainwindow
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/include
+)
+
+target_link_libraries(test_mainwindow
+    PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Network
+        Qt${QT_VERSION_MAJOR}::Test
+)
+
+add_test(NAME test_mainwindow COMMAND test_mainwindow)
