@@ -6,6 +6,7 @@
 #include <QHostAddress>
 #include <QMainWindow>
 
+#include "clientsettings.h"
 #include "sessionmode.h"
 
 QT_BEGIN_NAMESPACE
@@ -28,7 +29,7 @@ class QTimer;
  * - подключение и отключение по запросу пользователя;
  * - пакетный обмен данными через PacketProtocol;
  * - три режима работы клиента;
- * - сохранение пользовательских настроек через QSettings.
+ * - сохранение пользовательских настроек через ClientSettings.
  */
 class MainWindow : public QMainWindow
 {
@@ -118,14 +119,26 @@ private:
     void connectSignals();
 
     /*!
-     * \brief Загружает настройки клиента из QSettings.
+     * \brief Загружает настройки клиента из ClientSettings.
      */
     void loadSettings();
 
     /*!
-     * \brief Сохраняет настройки клиента в QSettings.
+     * \brief Сохраняет настройки клиента через ClientSettings.
      */
     void saveSettings();
+
+    /*!
+     * \brief Собирает DTO настроек из текущего состояния UI.
+     * \return DTO с настройками клиента.
+     */
+    ClientSettingsData buildSettingsData() const;
+
+    /*!
+     * \brief Применяет DTO настроек к UI.
+     * \param data DTO с настройками клиента.
+     */
+    void applySettingsData(const ClientSettingsData &data);
 
     /*!
      * \brief Добавляет строку в лог клиента.
@@ -225,6 +238,7 @@ private:
     Ui::MainWindow *ui = nullptr;          /*!< Сгенерированный UI-объект. */
     QTcpSocket *socket_ = nullptr;         /*!< Клиентский TCP-сокет. */
     QTimer *sendTimer_ = nullptr;          /*!< Таймер периодических режимов 2 и 3. */
+    ClientSettings clientSettings_;        /*!< Сервис загрузки и сохранения настроек клиента. */
     QByteArray socketReadBuffer_;          /*!< Накопленный входной буфер TCP-потока. */
     quint32 pendingServerBlockSize_ = 0;   /*!< Ожидаемый размер текущего входного кадра. */
     quint32 nextRequestNumber_ = 1;        /*!< Номер следующего исходящего пакета. */

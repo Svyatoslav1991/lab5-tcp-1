@@ -11,7 +11,6 @@
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
-#include <QSettings>
 #include <QStatusBar>
 #include <QTcpSocket>
 #include <QTimer>
@@ -22,12 +21,6 @@ namespace
 const QString kDefaultAddress = QStringLiteral("127.0.0.1");
 const QString kDefaultPort = QStringLiteral("8888");
 const QString kDefaultTimeout = QStringLiteral("1000");
-
-const QString kSettingsGroup = QStringLiteral("client");
-const QString kAddressKey = QStringLiteral("address");
-const QString kPortKey = QStringLiteral("port");
-const QString kTimeoutKey = QStringLiteral("timeout");
-const QString kSessionModeKey = QStringLiteral("session_mode");
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -189,20 +182,7 @@ void MainWindow::connectSignals()
 
 void MainWindow::loadSettings()
 {
-    QSettings settings;
-
-    settings.beginGroup(kSettingsGroup);
-
-    const QString address = settings.value(kAddressKey, kDefaultAddress).toString().trimmed();
-    const QString port = settings.value(kPortKey, kDefaultPort).toString().trimmed();
-    const QString timeout = settings.value(kTimeoutKey, kDefaultTimeout).toString().trimmed();
-    const QString sessionModeValue = settings.value(kSessionModeKey, QStringLiteral("single")).toString();
-
-    settings.endGroup();
-
-    ui->address_lineEdit->setText(address);
-    ui->port_lineEdit->setText(port);
-    ui->timeout_lineEdit->setText(timeout);
+    applySettingsData(clientSettings_.load());
 
     if (!ui->address_lineEdit->hasAcceptableInput()) {
         ui->address_lineEdit->setText(kDefaultAddress);
@@ -215,33 +195,36 @@ void MainWindow::loadSettings()
     if (!ui->timeout_lineEdit->hasAcceptableInput()) {
         ui->timeout_lineEdit->setText(kDefaultTimeout);
     }
-
-    setSessionMode(sessionModeFromSettingsValue(sessionModeValue));
 }
 
 //--------------------------------------------------------------------------
 
 void MainWindow::saveSettings()
 {
-    QSettings settings;
+    clientSettings_.save(buildSettingsData());
+}
 
-    settings.beginGroup(kSettingsGroup);
+//--------------------------------------------------------------------------
 
-    if (ui->address_lineEdit->hasAcceptableInput()) {
-        settings.setValue(kAddressKey, ui->address_lineEdit->text().trimmed());
-    }
+ClientSettingsData MainWindow::buildSettingsData() const
+{
+    ClientSettingsData data;
+    data.address = ui->address_lineEdit->text().trimmed();
+    data.port = ui->port_lineEdit->text().trimmed();
+    data.timeout = ui->timeout_lineEdit->text().trimmed();
+    data.sessionMode = currentSessionMode();
 
-    if (ui->port_lineEdit->hasAcceptableInput()) {
-        settings.setValue(kPortKey, ui->port_lineEdit->text().trimmed());
-    }
+    return data;
+}
 
-    if (ui->timeout_lineEdit->hasAcceptableInput()) {
-        settings.setValue(kTimeoutKey, ui->timeout_lineEdit->text().trimmed());
-    }
+//--------------------------------------------------------------------------
 
-    settings.setValue(kSessionModeKey, sessionModeToSettingsValue(currentSessionMode()));
-
-    settings.endGroup();
+void MainWindow::applySettingsData(const ClientSettingsData &data)
+{
+    ui->address_lineEdit->setText(data.address);
+    ui->port_lineEdit->setText(data.port);
+    ui->timeout_lineEdit->setText(data.timeout);
+    setSessionMode(data.sessionMode);
 }
 
 //--------------------------------------------------------------------------
@@ -479,21 +462,6 @@ void MainWindow::processSocketBuffer()
         QByteArray payload;
 
         if (!PacketProtocol::tryExtractFrame(socketReadBuffer_, pendingServerBlockSize_, payload)) {
-            if (pendingServerBlockSize_ == 0 && socketReadBuffer_.isEmpty()) {
-                break;
-            }
-
-            if (!socketReadBuffer_.isEmpty() &&
-                pendingServerBlockSize_ == 0 &&
-                socketReadBuffer_.size() < PacketProtocol::HeaderSize) {
-                break;
-            }
-
-            if (pendingServerBlockSize_ > PacketProtocol::MaxPayloadSize) {
-                appendLog(QStringLiteral("Получен некорректный размер пакета, входной буфер очищен"));
-                resetIncomingFrameState();
-            }
-
             break;
         }
 
