@@ -1,7 +1,8 @@
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Network Test)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Network Test)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets Network Test)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Network Test)
 
 add_executable(test_server_packetprotocol
     test_packetprotocol.cpp
@@ -62,3 +63,31 @@ target_link_libraries(test_server_serversettings
 )
 
 add_test(NAME test_server_serversettings COMMAND test_server_serversettings)
+
+add_executable(test_server_mainwindow
+    test_mainwindow.cpp
+    ../app/src/mainwindow.cpp
+    ../app/src/mainwindow.ui
+    ../app/include/mainwindow.h
+    ../app/src/servercontroller.cpp
+    ../app/include/servercontroller.h
+    ../app/src/serversettings.cpp
+    ../app/include/serversettings.h
+    ../app/src/packetprotocol.cpp
+    ../app/include/packetprotocol.h
+)
+
+target_include_directories(test_server_mainwindow
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/include
+)
+
+target_link_libraries(test_server_mainwindow
+    PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Network
+        Qt${QT_VERSION_MAJOR}::Test
+)
+
+add_test(NAME test_server_mainwindow COMMAND test_server_mainwindow)
