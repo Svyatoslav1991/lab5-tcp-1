@@ -9,10 +9,16 @@ set(SERVER_APP_SOURCES
     src/main.cpp
     src/mainwindow.cpp
     src/mainwindow.ui
+    src/packetprotocol.cpp
+    src/serversettings.cpp
+    src/servercontroller.cpp
 )
 
 set(SERVER_APP_HEADERS
     include/mainwindow.h
+    include/packetprotocol.h
+    include/serversettings.h
+    include/servercontroller.h
 )
 
 add_executable(lab5_tcp_server

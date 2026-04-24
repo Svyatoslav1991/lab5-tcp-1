@@ -1,12 +1,11 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QAbstractSocket>
-#include <QByteArray>
 #include <QHostAddress>
 #include <QMainWindow>
-#include <QPointer>
-#include <QTime>
+
+#include "servercontroller.h"
+#include "serversettings.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -15,28 +14,18 @@ class MainWindow;
 QT_END_NAMESPACE
 
 class QCloseEvent;
-class QTcpServer;
-class QTcpSocket;
 
 /*!
  * \class MainWindow
  * \brief Главное окно TCP-сервера для лабораторной работы №5.
  *
  * \details
- * Класс реализует однопоточный асинхронный TCP-сервер с графическим интерфейсом.
- * Пользователь задаёт адрес и порт, после чего сервер начинает прослушивание
- * входящих соединений через QTcpServer.
- *
- * На текущем этапе реализованы:
- * - запуск и остановка прослушивания;
- * - приём входящего подключения;
- * - обработка отключения клиента;
- * - отслеживание изменения состояния сокета клиента;
- * - пакетный обмен через QDataStream;
- * - сохранение адреса и порта через QSettings.
- *
- * Для упрощения первого этапа сервер поддерживает одного активного клиента.
- * Дополнительные входящие подключения отклоняются.
+ * Класс реализует UI-слой сервера:
+ * - инициализацию интерфейса;
+ * - валидацию параметров прослушивания;
+ * - загрузку и сохранение настроек;
+ * - передачу пользовательских команд в ServerController;
+ * - отображение логов и обновление состояния элементов управления.
  */
 class MainWindow : public QMainWindow
 {
@@ -58,10 +47,6 @@ protected:
     /*!
      * \brief Обрабатывает закрытие окна.
      * \param event Событие закрытия окна.
-     *
-     * \details
-     * Перед закрытием сохраняет пользовательские настройки и корректно
-     * останавливает сервер при необходимости.
      */
     void closeEvent(QCloseEvent *event) override;
 
@@ -76,39 +61,6 @@ private slots:
      */
     void onStopListeningClicked();
 
-    /*!
-     * \brief Обрабатывает появление нового входящего соединения.
-     */
-    void onNewConnection();
-
-    /*!
-     * \brief Обрабатывает готовность данных от активного клиента.
-     */
-    void onClientReadyRead();
-
-    /*!
-     * \brief Обрабатывает отключение активного клиента.
-     */
-    void onClientDisconnected();
-
-    /*!
-     * \brief Обрабатывает изменение состояния активного клиентского сокета.
-     * \param socketState Новое состояние сокета.
-     */
-    void onClientStateChanged(QAbstractSocket::SocketState socketState);
-
-    /*!
-     * \brief Обрабатывает ошибку активного клиентского сокета.
-     * \param socketError Код ошибки сокета.
-     */
-    void onClientErrorOccurred(QAbstractSocket::SocketError socketError);
-
-    /*!
-     * \brief Обрабатывает ошибку при приёме нового соединения сервером.
-     * \param socketError Код ошибки сокета.
-     */
-    void onServerAcceptError(QAbstractSocket::SocketError socketError);
-
 private:
     /*!
      * \brief Выполняет базовую инициализацию интерфейса.
@@ -116,31 +68,42 @@ private:
     void initializeUi();
 
     /*!
-     * \brief Настраивает сигналы и слоты интерфейса и серверных объектов.
+     * \brief Настраивает сигналы и слоты интерфейса и контроллера.
      */
     void connectSignals();
 
     /*!
-     * \brief Загружает адрес и порт из QSettings.
+     * \brief Загружает настройки сервера из ServerSettings.
      */
     void loadSettings();
 
     /*!
-     * \brief Сохраняет адрес и порт в QSettings.
+     * \brief Сохраняет настройки сервера через ServerSettings.
      */
     void saveSettings();
 
     /*!
-     * \brief Добавляет сообщение в лог сервера.
+     * \brief Собирает DTO настроек из текущего состояния UI.
+     * \return DTO с настройками сервера.
+     */
+    ServerSettingsData buildSettingsData() const;
+
+    /*!
+     * \brief Применяет DTO настроек к UI.
+     * \param data DTO с настройками сервера.
+     */
+    void applySettingsData(const ServerSettingsData &data);
+
+    /*!
+     * \brief Добавляет строку в лог сервера.
      * \param message Текст сообщения.
      */
     void appendLog(const QString &message);
 
     /*!
-     * \brief Обновляет доступность элементов интерфейса в зависимости от состояния прослушивания.
-     * \param isListening true, если сервер прослушивает порт.
+     * \brief Обновляет доступность элементов управления в зависимости от состояния прослушивания.
      */
-    void updateListeningControls(bool isListening);
+    void updateListeningControls();
 
     /*!
      * \brief Проверяет и разбирает параметры прослушивания из интерфейса.
@@ -150,73 +113,10 @@ private:
      */
     bool tryGetListenParameters(QHostAddress &address, quint16 &port) const;
 
-    /*!
-     * \brief Возвращает строковое представление состояния сокета.
-     * \param socketState Состояние сокета.
-     * \return Строковое представление состояния сокета.
-     */
-    QString socketStateToString(QAbstractSocket::SocketState socketState) const;
-
-    /*!
-     * \brief Возвращает строковое представление ошибки сокета.
-     * \param socketError Код ошибки сокета.
-     * \return Строковое представление ошибки сокета.
-     */
-    QString socketErrorToString(QAbstractSocket::SocketError socketError) const;
-
-    /*!
-     * \brief Корректно отключает и удаляет активный клиентский сокет.
-     */
-    void resetClientSocket();
-
-    /*!
-     * \brief Обрабатывает накопленный входной буфер клиента.
-     *
-     * \details
-     * Метод пытается извлечь один или несколько полных кадров TCP-протокола,
-     * распаковать их и отправить пакет-ответ.
-     */
-    void processClientBuffer();
-
-    /*!
-     * \brief Формирует кадр ответа сервера.
-     * \param number Числовое поле ответа.
-     * \param text Строковое поле ответа.
-     * \param serverTime Время сервера.
-     * \return Готовый бинарный кадр для отправки клиенту.
-     */
-    QByteArray buildResponseFrame(quint32 number,
-                                  const QString &text,
-                                  const QTime &serverTime) const;
-
-    /*!
-     * \brief Пытается извлечь один полный кадр из накопленного буфера.
-     * \param buffer Буфер входных байтов.
-     * \param pendingBlockSize Ожидаемый размер полезной нагрузки.
-     * \param payload Выходная полезная нагрузка кадра.
-     * \return true, если удалось извлечь полный кадр, иначе false.
-     */
-    bool tryExtractFrame(QByteArray &buffer,
-                         quint32 &pendingBlockSize,
-                         QByteArray &payload);
-
-    /*!
-     * \brief Разбирает полезную нагрузку клиентского запроса.
-     * \param payload Бинарная полезная нагрузка.
-     * \param number Выходное числовое поле.
-     * \param text Выходное строковое поле.
-     * \return true, если пакет успешно разобран, иначе false.
-     */
-    bool parseRequestPayload(const QByteArray &payload,
-                             quint32 &number,
-                             QString &text) const;
-
 private:
-    Ui::MainWindow *ui = nullptr;
-    QTcpServer *server_ = nullptr;
-    QPointer<QTcpSocket> clientSocket_;
-    QByteArray clientReadBuffer_;
-    quint32 pendingClientBlockSize_ = 0;
+    Ui::MainWindow *ui = nullptr;               /*!< Сгенерированный UI-объект. */
+    ServerController *serverController_ = nullptr; /*!< Контроллер сетевого поведения сервера. */
+    ServerSettings serverSettings_;             /*!< Сервис загрузки и сохранения настроек сервера. */
 };
 
 #endif // MAINWINDOW_H
