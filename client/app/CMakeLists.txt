@@ -11,6 +11,7 @@ set(CLIENT_APP_SOURCES
     src/mainwindow.ui
     src/packetprotocol.cpp
     src/clientsettings.cpp
+    src/clientcontroller.cpp
 )
 
 set(CLIENT_APP_HEADERS
@@ -18,6 +19,7 @@ set(CLIENT_APP_HEADERS
     include/sessionmode.h
     include/packetprotocol.h
     include/clientsettings.h
+    include/clientcontroller.h
 )
 
 add_executable(lab5_tcp_client

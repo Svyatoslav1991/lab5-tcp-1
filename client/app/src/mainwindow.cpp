@@ -1,8 +1,6 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
-#include "packetprotocol.h"
-
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QLineEdit>
@@ -12,9 +10,6 @@
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QStatusBar>
-#include <QTcpSocket>
-#include <QTimer>
-#include <QDebug>
 
 namespace
 {
@@ -26,8 +21,7 @@ const QString kDefaultTimeout = QStringLiteral("1000");
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
-    , socket_(new QTcpSocket(this))
-    , sendTimer_(new QTimer(this))
+    , clientController_(new ClientController(this))
 {
     ui->setupUi(this);
     initializeUi();
@@ -46,12 +40,7 @@ MainWindow::~MainWindow()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     saveSettings();
-    stopPeriodicMode();
-
-    if (socket_->state() != QAbstractSocket::UnconnectedState) {
-        socket_->disconnectFromHost();
-        socket_->close();
-    }
+    clientController_->shutdown();
 
     QMainWindow::closeEvent(event);
 }
@@ -97,8 +86,6 @@ void MainWindow::initializeUi()
 
     ui->clientLog_plainTextEdit->setReadOnly(true);
     ui->single_radioButton->setChecked(true);
-
-    sendTimer_->setSingleShot(false);
 
     loadSettings();
     updateConnectionControls();
@@ -152,30 +139,11 @@ void MainWindow::connectSignals()
     connect(ui->message_lineEdit, &QLineEdit::returnPressed,
             this, &MainWindow::onWriteClicked);
 
-    connect(socket_, &QTcpSocket::connected,
-            this, &MainWindow::onSocketConnected);
+    connect(clientController_, &ClientController::logMessage,
+            this, &MainWindow::appendLog);
 
-    connect(socket_, &QTcpSocket::disconnected,
-            this, &MainWindow::onSocketDisconnected);
-
-    connect(socket_, &QTcpSocket::readyRead,
-            this, &MainWindow::onSocketReadyRead);
-
-    connect(socket_, &QTcpSocket::stateChanged,
-            this, &MainWindow::onSocketStateChanged);
-
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    connect(socket_, &QTcpSocket::errorOccurred,
-            this, &MainWindow::onSocketErrorOccurred);
-#else
-    connect(socket_,
-            QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error),
-            this,
-            &MainWindow::onSocketErrorOccurred);
-#endif
-
-    connect(sendTimer_, &QTimer::timeout,
-            this, &MainWindow::onSendTimerTimeout);
+    connect(clientController_, &ClientController::stateChanged,
+            this, &MainWindow::updateConnectionControls);
 }
 
 //--------------------------------------------------------------------------
@@ -273,17 +241,18 @@ void MainWindow::setSessionMode(SessionMode mode)
 
 void MainWindow::updateConnectionControls()
 {
-    const QAbstractSocket::SocketState socketState = socket_->state();
-    const SessionMode mode = currentSessionMode();
+    const QAbstractSocket::SocketState socketState = clientController_->socketState();
+    const SessionMode selectedMode = currentSessionMode();
+    const SessionMode periodicMode = clientController_->activePeriodicMode();
 
     const bool isConnected = socketState == QAbstractSocket::ConnectedState;
     const bool isUnconnected = socketState == QAbstractSocket::UnconnectedState;
     const bool isConnecting = socketState == QAbstractSocket::ConnectingState;
     const bool isClosing = socketState == QAbstractSocket::ClosingState;
-    const bool isPeriodicModeRunning = sendTimer_->isActive();
+    const bool isPeriodicModeRunning = clientController_->isPeriodicModeActive();
 
     ui->connect_pushButton->setEnabled(
-        mode != SessionMode::Short &&
+        selectedMode != SessionMode::Short &&
         isUnconnected &&
         !isPeriodicModeRunning
     );
@@ -292,8 +261,8 @@ void MainWindow::updateConnectionControls()
 
     ui->write_pushButton->setEnabled(
         !isPeriodicModeRunning &&
-        ((mode == SessionMode::Short && isUnconnected) ||
-         (mode != SessionMode::Short && isConnected))
+        ((selectedMode == SessionMode::Short && isUnconnected) ||
+         (selectedMode != SessionMode::Short && isConnected))
     );
 
     ui->stop_pushButton->setEnabled(isPeriodicModeRunning);
@@ -310,15 +279,15 @@ void MainWindow::updateConnectionControls()
     ui->timeout_lineEdit->setEnabled(
         isUnconnected &&
         !isPeriodicModeRunning &&
-        mode != SessionMode::Single
+        selectedMode != SessionMode::Single
     );
 
-    if (isPeriodicModeRunning && mode == SessionMode::Long) {
+    if (isPeriodicModeRunning && periodicMode == SessionMode::Long) {
         statusBar()->showMessage(QStringLiteral("Режим 2: периодическая отправка активна"));
         return;
     }
 
-    if (isPeriodicModeRunning && mode == SessionMode::Short) {
+    if (isPeriodicModeRunning && periodicMode == SessionMode::Short) {
         statusBar()->showMessage(QStringLiteral("Режим 3: периодические подключения активны"));
         return;
     }
@@ -389,213 +358,6 @@ bool MainWindow::tryGetTimeout(int &timeoutMs) const
 
 //--------------------------------------------------------------------------
 
-QString MainWindow::socketStateToString(QAbstractSocket::SocketState socketState) const
-{
-    switch (socketState) {
-    case QAbstractSocket::UnconnectedState:
-        return QStringLiteral("UnconnectedState");
-    case QAbstractSocket::HostLookupState:
-        return QStringLiteral("HostLookupState");
-    case QAbstractSocket::ConnectingState:
-        return QStringLiteral("ConnectingState");
-    case QAbstractSocket::ConnectedState:
-        return QStringLiteral("ConnectedState");
-    case QAbstractSocket::BoundState:
-        return QStringLiteral("BoundState");
-    case QAbstractSocket::ListeningState:
-        return QStringLiteral("ListeningState");
-    case QAbstractSocket::ClosingState:
-        return QStringLiteral("ClosingState");
-    default:
-        return QStringLiteral("UnknownState");
-    }
-}
-
-//--------------------------------------------------------------------------
-
-QString MainWindow::socketErrorToString(QAbstractSocket::SocketError socketError) const
-{
-    switch (socketError) {
-    case QAbstractSocket::ConnectionRefusedError:
-        return QStringLiteral("ConnectionRefusedError");
-    case QAbstractSocket::RemoteHostClosedError:
-        return QStringLiteral("RemoteHostClosedError");
-    case QAbstractSocket::HostNotFoundError:
-        return QStringLiteral("HostNotFoundError");
-    case QAbstractSocket::SocketAccessError:
-        return QStringLiteral("SocketAccessError");
-    case QAbstractSocket::SocketResourceError:
-        return QStringLiteral("SocketResourceError");
-    case QAbstractSocket::SocketTimeoutError:
-        return QStringLiteral("SocketTimeoutError");
-    case QAbstractSocket::DatagramTooLargeError:
-        return QStringLiteral("DatagramTooLargeError");
-    case QAbstractSocket::NetworkError:
-        return QStringLiteral("NetworkError");
-    case QAbstractSocket::AddressInUseError:
-        return QStringLiteral("AddressInUseError");
-    case QAbstractSocket::SocketAddressNotAvailableError:
-        return QStringLiteral("SocketAddressNotAvailableError");
-    case QAbstractSocket::UnsupportedSocketOperationError:
-        return QStringLiteral("UnsupportedSocketOperationError");
-    default:
-        return QStringLiteral("UnknownSocketError");
-    }
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::resetIncomingFrameState()
-{
-    socketReadBuffer_.clear();
-    pendingServerBlockSize_ = 0;
-    shortModeWaitingForResponse_ = false;
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::processSocketBuffer()
-{
-    bool responseReceived = false;
-
-    while (true) {
-        QByteArray payload;
-
-        if (!PacketProtocol::tryExtractFrame(socketReadBuffer_, pendingServerBlockSize_, payload)) {
-            break;
-        }
-
-        ResponsePacket packet;
-
-        if (!PacketProtocol::parseResponsePayload(payload, packet)) {
-            appendLog(QStringLiteral("Не удалось разобрать пакет ответа сервера"));
-            continue;
-        }
-
-        appendLog(QStringLiteral("Получен пакет-ответ: number=%1, text=\"%2\", time=%3")
-                  .arg(packet.number)
-                  .arg(packet.text)
-                  .arg(packet.serverTime.toString(QStringLiteral("HH:mm:ss"))));
-
-        responseReceived = true;
-    }
-
-    if (responseReceived &&
-        sendTimer_->isActive() &&
-        currentSessionMode() == SessionMode::Short &&
-        socket_->state() == QAbstractSocket::ConnectedState) {
-        shortModeWaitingForResponse_ = false;
-        appendLog(QStringLiteral("Режим 3: ответ получен, выполняется отключение"));
-        socket_->disconnectFromHost();
-    }
-}
-
-//--------------------------------------------------------------------------
-
-bool MainWindow::sendPacket(const QString &text)
-{
-    if (socket_->state() != QAbstractSocket::ConnectedState) {
-        return false;
-    }
-
-    const RequestPacket packet { nextRequestNumber_++, text };
-    const QByteArray frame = PacketProtocol::buildRequestFrame(packet);
-
-    const qint64 written = socket_->write(frame);
-
-    if (written == -1) {
-        appendLog(QStringLiteral("Не удалось отправить пакет: %1").arg(socket_->errorString()));
-        return false;
-    }
-
-    appendLog(QStringLiteral("Отправлен пакет: number=%1, text=\"%2\"")
-              .arg(packet.number)
-              .arg(packet.text));
-
-    return true;
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::startLongMode(int timeoutMs, const QString &text)
-{
-    if (!sendPacket(text)) {
-        return;
-    }
-
-    periodicMessageText_ = text;
-    sendTimer_->start(timeoutMs);
-
-    appendLog(QStringLiteral("Запущен режим 2: периодическая отправка, timeout=%1 мс")
-              .arg(timeoutMs));
-
-    updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::startShortMode(int timeoutMs, const QString &text)
-{
-    periodicMessageText_ = text;
-    shortModeWaitingForResponse_ = false;
-    sendTimer_->start(timeoutMs);
-
-    appendLog(QStringLiteral("Запущен режим 3: периодические подключения каждые %1 мс")
-              .arg(timeoutMs));
-
-    startShortModeCycle();
-    updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::stopPeriodicMode(const QString &logMessage)
-{
-    if (!sendTimer_->isActive()) {
-        return;
-    }
-
-    sendTimer_->stop();
-    shortModeWaitingForResponse_ = false;
-
-    if (!logMessage.isEmpty()) {
-        appendLog(logMessage);
-    }
-
-    updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::startShortModeCycle()
-{
-    if (currentSessionMode() != SessionMode::Short || !sendTimer_->isActive()) {
-        return;
-    }
-
-    if (socket_->state() != QAbstractSocket::UnconnectedState) {
-        qDebug() << "CLIENT: mode3 cycle skipped, socket state =" << socketStateToString(socket_->state());
-        return;
-    }
-
-    QHostAddress address;
-    quint16 port = 0;
-
-    if (!tryGetConnectionParameters(address, port)) {
-        stopPeriodicMode(QStringLiteral("Режим 3 остановлен: некорректные параметры подключения"));
-        return;
-    }
-
-    appendLog(QStringLiteral("Режим 3: попытка подключения к %1:%2")
-              .arg(address.toString())
-              .arg(port));
-
-    socket_->connectToHost(address, port);
-    updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
 void MainWindow::onConnectClicked()
 {
     QHostAddress address;
@@ -611,41 +373,14 @@ void MainWindow::onConnectClicked()
     }
 
     saveSettings();
-
-    appendLog(QStringLiteral("Попытка подключения к %1:%2")
-              .arg(address.toString())
-              .arg(port));
-
-    socket_->connectToHost(address, port);
-    updateConnectionControls();
+    clientController_->connectToHost(address, port);
 }
 
 //--------------------------------------------------------------------------
 
 void MainWindow::onDisconnectClicked()
 {
-    if (sendTimer_->isActive()) {
-        switch (currentSessionMode()) {
-        case SessionMode::Long:
-            stopPeriodicMode(QStringLiteral("Режим 2 остановлен перед отключением"));
-            break;
-        case SessionMode::Short:
-            stopPeriodicMode(QStringLiteral("Режим 3 остановлен перед отключением"));
-            break;
-        case SessionMode::Single:
-            stopPeriodicMode();
-            break;
-        }
-    }
-
-    if (socket_->state() == QAbstractSocket::UnconnectedState) {
-        updateConnectionControls();
-        return;
-    }
-
-    appendLog(QStringLiteral("Запрошено отключение от сервера"));
-    socket_->disconnectFromHost();
-    updateConnectionControls();
+    clientController_->disconnectFromHost();
 }
 
 //--------------------------------------------------------------------------
@@ -665,18 +400,18 @@ void MainWindow::onWriteClicked()
 
     switch (currentSessionMode()) {
     case SessionMode::Single:
-        if (socket_->state() != QAbstractSocket::ConnectedState) {
+        if (clientController_->socketState() != QAbstractSocket::ConnectedState) {
             return;
         }
 
-        if (sendPacket(text)) {
+        if (clientController_->sendSinglePacket(text)) {
             ui->message_lineEdit->clear();
         }
         break;
 
     case SessionMode::Long:
     {
-        if (socket_->state() != QAbstractSocket::ConnectedState) {
+        if (clientController_->socketState() != QAbstractSocket::ConnectedState) {
             return;
         }
 
@@ -692,7 +427,7 @@ void MainWindow::onWriteClicked()
         }
 
         saveSettings();
-        startLongMode(timeoutMs, text);
+        clientController_->startLongMode(text, timeoutMs);
         break;
     }
 
@@ -722,7 +457,7 @@ void MainWindow::onWriteClicked()
         }
 
         saveSettings();
-        startShortMode(timeoutMs, text);
+        clientController_->startShortMode(text, timeoutMs, address, port);
         break;
     }
     }
@@ -732,122 +467,23 @@ void MainWindow::onWriteClicked()
 
 void MainWindow::onStopClicked()
 {
-    if (!sendTimer_->isActive()) {
+    if (!clientController_->isPeriodicModeActive()) {
         return;
     }
 
-    const SessionMode mode = currentSessionMode();
-
-    if (mode == SessionMode::Long) {
-        stopPeriodicMode(QStringLiteral("Режим 2 остановлен"));
+    if (clientController_->activePeriodicMode() == SessionMode::Long) {
+        clientController_->stopPeriodicMode(QStringLiteral("Режим 2 остановлен"));
         return;
     }
 
-    if (mode == SessionMode::Short) {
-        stopPeriodicMode(QStringLiteral("Режим 3 остановлен"));
+    if (clientController_->activePeriodicMode() == SessionMode::Short) {
+        clientController_->stopPeriodicMode(QStringLiteral("Режим 3 остановлен"));
 
-        if (socket_->state() != QAbstractSocket::UnconnectedState) {
+        if (clientController_->socketState() != QAbstractSocket::UnconnectedState) {
             appendLog(QStringLiteral("Режим 3: текущий цикл прерывается отключением"));
-            socket_->disconnectFromHost();
+            clientController_->disconnectFromHost();
         }
 
         return;
-    }
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::onSocketConnected()
-{
-    resetIncomingFrameState();
-
-    appendLog(QStringLiteral("Подключение к серверу установлено: %1:%2")
-              .arg(socket_->peerAddress().toString())
-              .arg(socket_->peerPort()));
-
-    qDebug() << "CLIENT: connected to server"
-             << socket_->peerAddress().toString()
-             << socket_->peerPort();
-
-    if (sendTimer_->isActive() && currentSessionMode() == SessionMode::Short) {
-        if (sendPacket(periodicMessageText_)) {
-            shortModeWaitingForResponse_ = true;
-        } else {
-            appendLog(QStringLiteral("Режим 3 остановлен из-за ошибки отправки"));
-            stopPeriodicMode();
-            socket_->disconnectFromHost();
-        }
-    }
-
-    updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::onSocketDisconnected()
-{
-    const bool keepShortModeRunning =
-        sendTimer_->isActive() &&
-        currentSessionMode() == SessionMode::Short;
-
-    resetIncomingFrameState();
-
-    if (!keepShortModeRunning) {
-        periodicMessageText_.clear();
-    }
-
-    appendLog(QStringLiteral("Соединение с сервером закрыто"));
-    updateConnectionControls();
-
-    qDebug() << "CLIENT: disconnected";
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::onSocketReadyRead()
-{
-    socketReadBuffer_.append(socket_->readAll());
-    processSocketBuffer();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::onSocketStateChanged(QAbstractSocket::SocketState socketState)
-{
-    qDebug() << "CLIENT: socket state =" << socketStateToString(socketState);
-    updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::onSocketErrorOccurred(QAbstractSocket::SocketError socketError)
-{
-    qDebug() << "CLIENT: socket error =" << socketErrorToString(socketError)
-             << "|" << socket_->errorString();
-
-    if (socketError != QAbstractSocket::RemoteHostClosedError) {
-        appendLog(QStringLiteral("Ошибка сокета: %1").arg(socket_->errorString()));
-    }
-
-    updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::onSendTimerTimeout()
-{
-    switch (currentSessionMode()) {
-    case SessionMode::Long:
-        if (!sendPacket(periodicMessageText_)) {
-            stopPeriodicMode(QStringLiteral("Режим 2 остановлен из-за ошибки отправки"));
-        }
-        break;
-
-    case SessionMode::Short:
-        startShortModeCycle();
-        break;
-
-    case SessionMode::Single:
-        break;
     }
 }
