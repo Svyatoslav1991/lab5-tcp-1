@@ -43,3 +43,22 @@ target_link_libraries(test_server_servercontroller
 )
 
 add_test(NAME test_server_servercontroller COMMAND test_server_servercontroller)
+
+add_executable(test_server_serversettings
+    test_serversettings.cpp
+    ../app/src/serversettings.cpp
+    ../app/include/serversettings.h
+)
+
+target_include_directories(test_server_serversettings
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/include
+)
+
+target_link_libraries(test_server_serversettings
+    PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Test
+)
+
+add_test(NAME test_server_serversettings COMMAND test_server_serversettings)
