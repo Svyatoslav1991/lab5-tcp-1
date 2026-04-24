@@ -42,3 +42,23 @@ target_link_libraries(test_clientcontroller
 )
 
 add_test(NAME test_clientcontroller COMMAND test_clientcontroller)
+
+add_executable(test_clientsettings
+    test_clientsettings.cpp
+    ../app/src/clientsettings.cpp
+    ../app/include/clientsettings.h
+    ../app/include/sessionmode.h
+)
+
+target_include_directories(test_clientsettings
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/include
+)
+
+target_link_libraries(test_clientsettings
+    PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Test
+)
+
+add_test(NAME test_clientsettings COMMAND test_clientsettings)
