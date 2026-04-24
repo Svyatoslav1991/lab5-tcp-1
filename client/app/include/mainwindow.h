@@ -5,7 +5,8 @@
 #include <QByteArray>
 #include <QHostAddress>
 #include <QMainWindow>
-#include <QTime>
+
+#include "sessionmode.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -23,14 +24,11 @@ class QTimer;
  *
  * \details
  * Класс реализует асинхронный TCP-клиент с графическим интерфейсом.
- * Пользователь задаёт адрес и порт сервера, после чего может работать
- * в одном из трёх режимов:
- * - режим 1: ручная отправка пакетов в открытом соединении;
- * - режим 2: периодическая отправка пакетов по таймеру в открытом соединении;
- * - режим 3: периодическое подключение, отправка одного пакета, получение
- *   ответа и отключение.
- *
- * Для обмена используется пакетный протокол поверх QDataStream.
+ * Поддерживаются:
+ * - подключение и отключение по запросу пользователя;
+ * - пакетный обмен данными через PacketProtocol;
+ * - три режима работы клиента;
+ * - сохранение пользовательских настроек через QSettings.
  */
 class MainWindow : public QMainWindow
 {
@@ -52,10 +50,6 @@ protected:
     /*!
      * \brief Обрабатывает закрытие окна.
      * \param event Событие закрытия окна.
-     *
-     * \details
-     * Перед закрытием сохраняет настройки и корректно завершает
-     * активные сетевые операции.
      */
     void closeEvent(QCloseEvent *event) override;
 
@@ -71,7 +65,7 @@ private slots:
     void onDisconnectClicked();
 
     /*!
-     * \brief Обрабатывает нажатие кнопки отправки или запуска режима обмена.
+     * \brief Обрабатывает нажатие кнопки отправки или запуска выбранного режима.
      */
     void onWriteClicked();
 
@@ -140,6 +134,18 @@ private:
     void appendLog(const QString &message);
 
     /*!
+     * \brief Возвращает текущий режим работы клиента.
+     * \return Текущий режим работы.
+     */
+    SessionMode currentSessionMode() const;
+
+    /*!
+     * \brief Устанавливает текущий режим работы клиента в интерфейсе.
+     * \param mode Новый режим.
+     */
+    void setSessionMode(SessionMode mode);
+
+    /*!
      * \brief Обновляет доступность элементов управления.
      */
     void updateConnectionControls();
@@ -174,41 +180,14 @@ private:
     QString socketErrorToString(QAbstractSocket::SocketError socketError) const;
 
     /*!
+     * \brief Сбрасывает состояние накопленного входного буфера.
+     */
+    void resetIncomingFrameState();
+
+    /*!
      * \brief Обрабатывает накопленный входной буфер сокета.
      */
     void processSocketBuffer();
-
-    /*!
-     * \brief Формирует кадр клиентского запроса.
-     * \param number Числовое поле пакета.
-     * \param text Строковое поле пакета.
-     * \return Готовый бинарный кадр для отправки серверу.
-     */
-    QByteArray buildRequestFrame(quint32 number, const QString &text) const;
-
-    /*!
-     * \brief Пытается извлечь один полный кадр из накопленного буфера.
-     * \param buffer Буфер входных байтов.
-     * \param pendingBlockSize Ожидаемый размер полезной нагрузки.
-     * \param payload Выходная полезная нагрузка кадра.
-     * \return true, если удалось извлечь полный кадр, иначе false.
-     */
-    bool tryExtractFrame(QByteArray &buffer,
-                         quint32 &pendingBlockSize,
-                         QByteArray &payload);
-
-    /*!
-     * \brief Разбирает полезную нагрузку серверного ответа.
-     * \param payload Бинарная полезная нагрузка.
-     * \param number Выходное числовое поле.
-     * \param text Выходное строковое поле.
-     * \param serverTime Выходное поле времени сервера.
-     * \return true, если пакет успешно разобран, иначе false.
-     */
-    bool parseResponsePayload(const QByteArray &payload,
-                              quint32 &number,
-                              QString &text,
-                              QTime &serverTime) const;
 
     /*!
      * \brief Отправляет один пакет серверу.
@@ -218,24 +197,39 @@ private:
     bool sendPacket(const QString &text);
 
     /*!
+     * \brief Запускает периодический режим 2.
+     * \param timeoutMs Интервал таймера в миллисекундах.
+     * \param text Текст пакета.
+     */
+    void startLongMode(int timeoutMs, const QString &text);
+
+    /*!
+     * \brief Запускает периодический режим 3.
+     * \param timeoutMs Интервал таймера в миллисекундах.
+     * \param text Текст пакета.
+     */
+    void startShortMode(int timeoutMs, const QString &text);
+
+    /*!
+     * \brief Останавливает периодический режим.
+     * \param logMessage Сообщение в лог. Если пустое, лог не пополняется.
+     */
+    void stopPeriodicMode(const QString &logMessage = QString());
+
+    /*!
      * \brief Запускает один цикл режима 3.
-     *
-     * \details
-     * Метод инициирует новое подключение к серверу. После установления
-     * соединения пакет будет отправлен автоматически, затем после получения
-     * ответа соединение будет закрыто.
      */
     void startShortModeCycle();
 
 private:
-    Ui::MainWindow *ui = nullptr;
-    QTcpSocket *socket_ = nullptr;
-    QTimer *sendTimer_ = nullptr;
-    QByteArray socketReadBuffer_;
-    quint32 pendingServerBlockSize_ = 0;
-    quint32 nextRequestNumber_ = 1;
-    QString periodicMessageText_;
-    bool shortModeWaitingForResponse_ = false;
+    Ui::MainWindow *ui = nullptr;          /*!< Сгенерированный UI-объект. */
+    QTcpSocket *socket_ = nullptr;         /*!< Клиентский TCP-сокет. */
+    QTimer *sendTimer_ = nullptr;          /*!< Таймер периодических режимов 2 и 3. */
+    QByteArray socketReadBuffer_;          /*!< Накопленный входной буфер TCP-потока. */
+    quint32 pendingServerBlockSize_ = 0;   /*!< Ожидаемый размер текущего входного кадра. */
+    quint32 nextRequestNumber_ = 1;        /*!< Номер следующего исходящего пакета. */
+    QString periodicMessageText_;          /*!< Текст для периодической отправки в режимах 2 и 3. */
+    bool shortModeWaitingForResponse_ = false; /*!< Флаг ожидания ответа в текущем цикле режима 3. */
 };
 
 #endif // MAINWINDOW_H

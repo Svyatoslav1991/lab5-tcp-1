@@ -1,8 +1,9 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
+#include "packetprotocol.h"
+
 #include <QCloseEvent>
-#include <QDataStream>
 #include <QDateTime>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -27,15 +28,6 @@ const QString kAddressKey = QStringLiteral("address");
 const QString kPortKey = QStringLiteral("port");
 const QString kTimeoutKey = QStringLiteral("timeout");
 const QString kSessionModeKey = QStringLiteral("session_mode");
-
-const QString kSingleMode = QStringLiteral("single");
-const QString kLongMode = QStringLiteral("long");
-const QString kShortMode = QStringLiteral("short");
-
-constexpr int kFrameHeaderSize = static_cast<int>(sizeof(quint32));
-constexpr quint32 kMaxFramePayloadSize = 1024 * 1024;
-
-const QDataStream::Version kStreamVersion = QDataStream::Qt_5_12;
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -61,10 +53,7 @@ MainWindow::~MainWindow()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     saveSettings();
-
-    if (sendTimer_->isActive()) {
-        sendTimer_->stop();
-    }
+    stopPeriodicMode();
 
     if (socket_->state() != QAbstractSocket::UnconnectedState) {
         socket_->disconnectFromHost();
@@ -207,7 +196,7 @@ void MainWindow::loadSettings()
     const QString address = settings.value(kAddressKey, kDefaultAddress).toString().trimmed();
     const QString port = settings.value(kPortKey, kDefaultPort).toString().trimmed();
     const QString timeout = settings.value(kTimeoutKey, kDefaultTimeout).toString().trimmed();
-    const QString sessionMode = settings.value(kSessionModeKey, kSingleMode).toString();
+    const QString sessionModeValue = settings.value(kSessionModeKey, QStringLiteral("single")).toString();
 
     settings.endGroup();
 
@@ -227,27 +216,13 @@ void MainWindow::loadSettings()
         ui->timeout_lineEdit->setText(kDefaultTimeout);
     }
 
-    if (sessionMode == kLongMode) {
-        ui->long_radioButton->setChecked(true);
-    } else if (sessionMode == kShortMode) {
-        ui->short_radioButton->setChecked(true);
-    } else {
-        ui->single_radioButton->setChecked(true);
-    }
+    setSessionMode(sessionModeFromSettingsValue(sessionModeValue));
 }
 
 //--------------------------------------------------------------------------
 
 void MainWindow::saveSettings()
 {
-    QString sessionMode = kSingleMode;
-
-    if (ui->long_radioButton->isChecked()) {
-        sessionMode = kLongMode;
-    } else if (ui->short_radioButton->isChecked()) {
-        sessionMode = kShortMode;
-    }
-
     QSettings settings;
 
     settings.beginGroup(kSettingsGroup);
@@ -264,7 +239,7 @@ void MainWindow::saveSettings()
         settings.setValue(kTimeoutKey, ui->timeout_lineEdit->text().trimmed());
     }
 
-    settings.setValue(kSessionModeKey, sessionMode);
+    settings.setValue(kSessionModeKey, sessionModeToSettingsValue(currentSessionMode()));
 
     settings.endGroup();
 }
@@ -281,31 +256,66 @@ void MainWindow::appendLog(const QString &message)
 
 //--------------------------------------------------------------------------
 
+SessionMode MainWindow::currentSessionMode() const
+{
+    if (ui->long_radioButton->isChecked()) {
+        return SessionMode::Long;
+    }
+
+    if (ui->short_radioButton->isChecked()) {
+        return SessionMode::Short;
+    }
+
+    return SessionMode::Single;
+}
+
+//--------------------------------------------------------------------------
+
+void MainWindow::setSessionMode(SessionMode mode)
+{
+    switch (mode) {
+    case SessionMode::Single:
+        ui->single_radioButton->setChecked(true);
+        break;
+    case SessionMode::Long:
+        ui->long_radioButton->setChecked(true);
+        break;
+    case SessionMode::Short:
+        ui->short_radioButton->setChecked(true);
+        break;
+    }
+}
+
+//--------------------------------------------------------------------------
+
 void MainWindow::updateConnectionControls()
 {
-    const QAbstractSocket::SocketState state = socket_->state();
-    const bool isConnected = state == QAbstractSocket::ConnectedState;
-    const bool isUnconnected = state == QAbstractSocket::UnconnectedState;
-    const bool isLongMode = ui->long_radioButton->isChecked();
-    const bool isShortMode = ui->short_radioButton->isChecked();
+    const QAbstractSocket::SocketState socketState = socket_->state();
+    const SessionMode mode = currentSessionMode();
+
+    const bool isConnected = socketState == QAbstractSocket::ConnectedState;
+    const bool isUnconnected = socketState == QAbstractSocket::UnconnectedState;
+    const bool isConnecting = socketState == QAbstractSocket::ConnectingState;
+    const bool isClosing = socketState == QAbstractSocket::ClosingState;
     const bool isPeriodicModeRunning = sendTimer_->isActive();
 
-    ui->connect_pushButton->setEnabled(isUnconnected && !isPeriodicModeRunning && !isShortMode);
+    ui->connect_pushButton->setEnabled(
+        mode != SessionMode::Short &&
+        isUnconnected &&
+        !isPeriodicModeRunning
+    );
+
     ui->disconnect_pushButton->setEnabled(!isUnconnected);
 
-    if (isShortMode) {
-        ui->write_pushButton->setEnabled(isUnconnected && !isPeriodicModeRunning);
-    } else {
-        ui->write_pushButton->setEnabled(isConnected && !isPeriodicModeRunning);
-    }
+    ui->write_pushButton->setEnabled(
+        !isPeriodicModeRunning &&
+        ((mode == SessionMode::Short && isUnconnected) ||
+         (mode != SessionMode::Short && isConnected))
+    );
 
     ui->stop_pushButton->setEnabled(isPeriodicModeRunning);
 
-    const bool canEditMessage =
-        !isPeriodicModeRunning &&
-        (isUnconnected || (isConnected && !isShortMode));
-
-    ui->message_lineEdit->setEnabled(canEditMessage);
+    ui->message_lineEdit->setEnabled(!isPeriodicModeRunning);
 
     ui->address_lineEdit->setEnabled(isUnconnected && !isPeriodicModeRunning);
     ui->port_lineEdit->setEnabled(isUnconnected && !isPeriodicModeRunning);
@@ -317,22 +327,35 @@ void MainWindow::updateConnectionControls()
     ui->timeout_lineEdit->setEnabled(
         isUnconnected &&
         !isPeriodicModeRunning &&
-        (isLongMode || isShortMode)
+        mode != SessionMode::Single
     );
 
-    if (isPeriodicModeRunning && isShortMode) {
-        statusBar()->showMessage(QStringLiteral("Режим 3: периодические подключения активны"));
-    } else if (isPeriodicModeRunning && isLongMode) {
+    if (isPeriodicModeRunning && mode == SessionMode::Long) {
         statusBar()->showMessage(QStringLiteral("Режим 2: периодическая отправка активна"));
-    } else if (isConnected) {
-        statusBar()->showMessage(QStringLiteral("Клиент подключен к серверу"));
-    } else if (state == QAbstractSocket::ConnectingState) {
-        statusBar()->showMessage(QStringLiteral("Подключение к серверу..."));
-    } else if (state == QAbstractSocket::ClosingState) {
-        statusBar()->showMessage(QStringLiteral("Отключение от сервера..."));
-    } else {
-        statusBar()->showMessage(QStringLiteral("Клиент не подключен"));
+        return;
     }
+
+    if (isPeriodicModeRunning && mode == SessionMode::Short) {
+        statusBar()->showMessage(QStringLiteral("Режим 3: периодические подключения активны"));
+        return;
+    }
+
+    if (isConnected) {
+        statusBar()->showMessage(QStringLiteral("Клиент подключен к серверу"));
+        return;
+    }
+
+    if (isConnecting) {
+        statusBar()->showMessage(QStringLiteral("Подключение к серверу..."));
+        return;
+    }
+
+    if (isClosing) {
+        statusBar()->showMessage(QStringLiteral("Отключение от сервера..."));
+        return;
+    }
+
+    statusBar()->showMessage(QStringLiteral("Клиент не подключен"));
 }
 
 //--------------------------------------------------------------------------
@@ -439,76 +462,64 @@ QString MainWindow::socketErrorToString(QAbstractSocket::SocketError socketError
 
 //--------------------------------------------------------------------------
 
-QByteArray MainWindow::buildRequestFrame(quint32 number, const QString &text) const
+void MainWindow::resetIncomingFrameState()
 {
-    QByteArray payload;
-    QDataStream payloadStream(&payload, QIODevice::WriteOnly);
-    payloadStream.setVersion(kStreamVersion);
-    payloadStream << number << text;
-
-    QByteArray frame;
-    QDataStream frameStream(&frame, QIODevice::WriteOnly);
-    frameStream.setVersion(kStreamVersion);
-    frameStream << static_cast<quint32>(payload.size());
-
-    frame.append(payload);
-
-    return frame;
+    socketReadBuffer_.clear();
+    pendingServerBlockSize_ = 0;
+    shortModeWaitingForResponse_ = false;
 }
 
 //--------------------------------------------------------------------------
 
-bool MainWindow::tryExtractFrame(QByteArray &buffer,
-                                 quint32 &pendingBlockSize,
-                                 QByteArray &payload)
+void MainWindow::processSocketBuffer()
 {
-    payload.clear();
+    bool responseReceived = false;
 
-    if (pendingBlockSize == 0) {
-        if (buffer.size() < kFrameHeaderSize) {
-            return false;
+    while (true) {
+        QByteArray payload;
+
+        if (!PacketProtocol::tryExtractFrame(socketReadBuffer_, pendingServerBlockSize_, payload)) {
+            if (pendingServerBlockSize_ == 0 && socketReadBuffer_.isEmpty()) {
+                break;
+            }
+
+            if (!socketReadBuffer_.isEmpty() &&
+                pendingServerBlockSize_ == 0 &&
+                socketReadBuffer_.size() < PacketProtocol::HeaderSize) {
+                break;
+            }
+
+            if (pendingServerBlockSize_ > PacketProtocol::MaxPayloadSize) {
+                appendLog(QStringLiteral("Получен некорректный размер пакета, входной буфер очищен"));
+                resetIncomingFrameState();
+            }
+
+            break;
         }
 
-        QByteArray headerData = buffer.left(kFrameHeaderSize);
-        QDataStream headerStream(&headerData, QIODevice::ReadOnly);
-        headerStream.setVersion(kStreamVersion);
-        headerStream >> pendingBlockSize;
+        ResponsePacket packet;
 
-        if (pendingBlockSize == 0 || pendingBlockSize > kMaxFramePayloadSize) {
-            appendLog(QStringLiteral("Получен некорректный размер пакета, входной буфер очищен"));
-            buffer.clear();
-            pendingBlockSize = 0;
-            return false;
+        if (!PacketProtocol::parseResponsePayload(payload, packet)) {
+            appendLog(QStringLiteral("Не удалось разобрать пакет ответа сервера"));
+            continue;
         }
+
+        appendLog(QStringLiteral("Получен пакет-ответ: number=%1, text=\"%2\", time=%3")
+                  .arg(packet.number)
+                  .arg(packet.text)
+                  .arg(packet.serverTime.toString(QStringLiteral("HH:mm:ss"))));
+
+        responseReceived = true;
     }
 
-    const int fullFrameSize = kFrameHeaderSize + static_cast<int>(pendingBlockSize);
-
-    if (buffer.size() < fullFrameSize) {
-        return false;
+    if (responseReceived &&
+        sendTimer_->isActive() &&
+        currentSessionMode() == SessionMode::Short &&
+        socket_->state() == QAbstractSocket::ConnectedState) {
+        shortModeWaitingForResponse_ = false;
+        appendLog(QStringLiteral("Режим 3: ответ получен, выполняется отключение"));
+        socket_->disconnectFromHost();
     }
-
-    payload = buffer.mid(kFrameHeaderSize, static_cast<int>(pendingBlockSize));
-    buffer.remove(0, fullFrameSize);
-    pendingBlockSize = 0;
-
-    return true;
-}
-
-//--------------------------------------------------------------------------
-
-bool MainWindow::parseResponsePayload(const QByteArray &payload,
-                                      quint32 &number,
-                                      QString &text,
-                                      QTime &serverTime) const
-{
-    QByteArray payloadCopy = payload;
-    QDataStream payloadStream(&payloadCopy, QIODevice::ReadOnly);
-    payloadStream.setVersion(kStreamVersion);
-
-    payloadStream >> number >> text >> serverTime;
-
-    return payloadStream.status() == QDataStream::Ok;
 }
 
 //--------------------------------------------------------------------------
@@ -519,8 +530,8 @@ bool MainWindow::sendPacket(const QString &text)
         return false;
     }
 
-    const quint32 requestNumber = nextRequestNumber_++;
-    const QByteArray frame = buildRequestFrame(requestNumber, text);
+    const RequestPacket packet { nextRequestNumber_++, text };
+    const QByteArray frame = PacketProtocol::buildRequestFrame(packet);
 
     const qint64 written = socket_->write(frame);
 
@@ -530,17 +541,67 @@ bool MainWindow::sendPacket(const QString &text)
     }
 
     appendLog(QStringLiteral("Отправлен пакет: number=%1, text=\"%2\"")
-              .arg(requestNumber)
-              .arg(text));
+              .arg(packet.number)
+              .arg(packet.text));
 
     return true;
 }
 
 //--------------------------------------------------------------------------
 
+void MainWindow::startLongMode(int timeoutMs, const QString &text)
+{
+    if (!sendPacket(text)) {
+        return;
+    }
+
+    periodicMessageText_ = text;
+    sendTimer_->start(timeoutMs);
+
+    appendLog(QStringLiteral("Запущен режим 2: периодическая отправка, timeout=%1 мс")
+              .arg(timeoutMs));
+
+    updateConnectionControls();
+}
+
+//--------------------------------------------------------------------------
+
+void MainWindow::startShortMode(int timeoutMs, const QString &text)
+{
+    periodicMessageText_ = text;
+    shortModeWaitingForResponse_ = false;
+    sendTimer_->start(timeoutMs);
+
+    appendLog(QStringLiteral("Запущен режим 3: периодические подключения каждые %1 мс")
+              .arg(timeoutMs));
+
+    startShortModeCycle();
+    updateConnectionControls();
+}
+
+//--------------------------------------------------------------------------
+
+void MainWindow::stopPeriodicMode(const QString &logMessage)
+{
+    if (!sendTimer_->isActive()) {
+        return;
+    }
+
+    sendTimer_->stop();
+    shortModeWaitingForResponse_ = false;
+
+    if (!logMessage.isEmpty()) {
+        appendLog(logMessage);
+    }
+
+    updateConnectionControls();
+}
+
+//--------------------------------------------------------------------------
+
 void MainWindow::startShortModeCycle()
 {
-    if (!ui->short_radioButton->isChecked() || !sendTimer_->isActive()) {
+    if (currentSessionMode() != SessionMode::Short || !sendTimer_->isActive()) {
         return;
     }
 
@@ -553,13 +614,9 @@ void MainWindow::startShortModeCycle()
     quint16 port = 0;
 
     if (!tryGetConnectionParameters(address, port)) {
-        appendLog(QStringLiteral("Режим 3 остановлен: некорректные параметры подключения"));
-        sendTimer_->stop();
-        updateConnectionControls();
+        stopPeriodicMode(QStringLiteral("Режим 3 остановлен: некорректные параметры подключения"));
         return;
     }
-
-    shortModeWaitingForResponse_ = false;
 
     appendLog(QStringLiteral("Режим 3: попытка подключения к %1:%2")
               .arg(address.toString())
@@ -567,46 +624,6 @@ void MainWindow::startShortModeCycle()
 
     socket_->connectToHost(address, port);
     updateConnectionControls();
-}
-
-//--------------------------------------------------------------------------
-
-void MainWindow::processSocketBuffer()
-{
-    bool responseReceived = false;
-
-    while (true) {
-        QByteArray payload;
-
-        if (!tryExtractFrame(socketReadBuffer_, pendingServerBlockSize_, payload)) {
-            break;
-        }
-
-        quint32 number = 0;
-        QString text;
-        QTime serverTime;
-
-        if (!parseResponsePayload(payload, number, text, serverTime)) {
-            appendLog(QStringLiteral("Не удалось разобрать пакет ответа сервера"));
-            continue;
-        }
-
-        appendLog(QStringLiteral("Получен пакет-ответ: number=%1, text=\"%2\", time=%3")
-                  .arg(number)
-                  .arg(text)
-                  .arg(serverTime.toString(QStringLiteral("HH:mm:ss"))));
-
-        responseReceived = true;
-    }
-
-    if (responseReceived &&
-        sendTimer_->isActive() &&
-        ui->short_radioButton->isChecked() &&
-        socket_->state() == QAbstractSocket::ConnectedState) {
-        shortModeWaitingForResponse_ = false;
-        appendLog(QStringLiteral("Режим 3: ответ получен, выполняется отключение"));
-        socket_->disconnectFromHost();
-    }
 }
 
 //--------------------------------------------------------------------------
@@ -640,13 +657,16 @@ void MainWindow::onConnectClicked()
 void MainWindow::onDisconnectClicked()
 {
     if (sendTimer_->isActive()) {
-        sendTimer_->stop();
-        shortModeWaitingForResponse_ = false;
-
-        if (ui->long_radioButton->isChecked()) {
-            appendLog(QStringLiteral("Режим 2 остановлен перед отключением"));
-        } else if (ui->short_radioButton->isChecked()) {
-            appendLog(QStringLiteral("Режим 3 остановлен перед отключением"));
+        switch (currentSessionMode()) {
+        case SessionMode::Long:
+            stopPeriodicMode(QStringLiteral("Режим 2 остановлен перед отключением"));
+            break;
+        case SessionMode::Short:
+            stopPeriodicMode(QStringLiteral("Режим 3 остановлен перед отключением"));
+            break;
+        case SessionMode::Single:
+            stopPeriodicMode();
+            break;
         }
     }
 
@@ -675,7 +695,8 @@ void MainWindow::onWriteClicked()
         return;
     }
 
-    if (ui->single_radioButton->isChecked()) {
+    switch (currentSessionMode()) {
+    case SessionMode::Single:
         if (socket_->state() != QAbstractSocket::ConnectedState) {
             return;
         }
@@ -683,40 +704,43 @@ void MainWindow::onWriteClicked()
         if (sendPacket(text)) {
             ui->message_lineEdit->clear();
         }
+        break;
 
-        return;
-    }
-
-    int timeoutMs = 0;
-
-    if (!tryGetTimeout(timeoutMs)) {
-        QMessageBox::warning(
-            this,
-            QStringLiteral("Некорректный timeout"),
-            QStringLiteral("Введите корректный timeout в миллисекундах.")
-        );
-        return;
-    }
-
-    periodicMessageText_ = text;
-    saveSettings();
-
-    if (ui->long_radioButton->isChecked()) {
+    case SessionMode::Long:
+    {
         if (socket_->state() != QAbstractSocket::ConnectedState) {
             return;
         }
 
-        if (sendPacket(periodicMessageText_)) {
-            sendTimer_->start(timeoutMs);
-            appendLog(QStringLiteral("Запущен режим 2: периодическая отправка, timeout=%1 мс")
-                      .arg(timeoutMs));
-            updateConnectionControls();
+        int timeoutMs = 0;
+
+        if (!tryGetTimeout(timeoutMs)) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Некорректный timeout"),
+                QStringLiteral("Введите корректный timeout в миллисекундах.")
+            );
+            return;
         }
 
-        return;
+        saveSettings();
+        startLongMode(timeoutMs, text);
+        break;
     }
 
-    if (ui->short_radioButton->isChecked()) {
+    case SessionMode::Short:
+    {
+        int timeoutMs = 0;
+
+        if (!tryGetTimeout(timeoutMs)) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Некорректный timeout"),
+                QStringLiteral("Введите корректный timeout в миллисекундах.")
+            );
+            return;
+        }
+
         QHostAddress address;
         quint16 port = 0;
 
@@ -729,14 +753,10 @@ void MainWindow::onWriteClicked()
             return;
         }
 
-        shortModeWaitingForResponse_ = false;
-        sendTimer_->start(timeoutMs);
-
-        appendLog(QStringLiteral("Запущен режим 3: периодические подключения каждые %1 мс")
-                  .arg(timeoutMs));
-
-        startShortModeCycle();
-        updateConnectionControls();
+        saveSettings();
+        startShortMode(timeoutMs, text);
+        break;
+    }
     }
 }
 
@@ -748,31 +768,30 @@ void MainWindow::onStopClicked()
         return;
     }
 
-    const bool wasShortMode = ui->short_radioButton->isChecked();
+    const SessionMode mode = currentSessionMode();
 
-    sendTimer_->stop();
-    shortModeWaitingForResponse_ = false;
-
-    if (ui->long_radioButton->isChecked()) {
-        appendLog(QStringLiteral("Режим 2 остановлен"));
-    } else if (wasShortMode) {
-        appendLog(QStringLiteral("Режим 3 остановлен"));
+    if (mode == SessionMode::Long) {
+        stopPeriodicMode(QStringLiteral("Режим 2 остановлен"));
+        return;
     }
 
-    if (wasShortMode && socket_->state() != QAbstractSocket::UnconnectedState) {
-        appendLog(QStringLiteral("Режим 3: текущий цикл прерывается отключением"));
-        socket_->disconnectFromHost();
-    }
+    if (mode == SessionMode::Short) {
+        stopPeriodicMode(QStringLiteral("Режим 3 остановлен"));
 
-    updateConnectionControls();
+        if (socket_->state() != QAbstractSocket::UnconnectedState) {
+            appendLog(QStringLiteral("Режим 3: текущий цикл прерывается отключением"));
+            socket_->disconnectFromHost();
+        }
+
+        return;
+    }
 }
 
 //--------------------------------------------------------------------------
 
 void MainWindow::onSocketConnected()
 {
-    socketReadBuffer_.clear();
-    pendingServerBlockSize_ = 0;
+    resetIncomingFrameState();
 
     appendLog(QStringLiteral("Подключение к серверу установлено: %1:%2")
               .arg(socket_->peerAddress().toString())
@@ -782,13 +801,12 @@ void MainWindow::onSocketConnected()
              << socket_->peerAddress().toString()
              << socket_->peerPort();
 
-    if (sendTimer_->isActive() && ui->short_radioButton->isChecked()) {
+    if (sendTimer_->isActive() && currentSessionMode() == SessionMode::Short) {
         if (sendPacket(periodicMessageText_)) {
             shortModeWaitingForResponse_ = true;
         } else {
             appendLog(QStringLiteral("Режим 3 остановлен из-за ошибки отправки"));
-            sendTimer_->stop();
-            shortModeWaitingForResponse_ = false;
+            stopPeriodicMode();
             socket_->disconnectFromHost();
         }
     }
@@ -800,9 +818,15 @@ void MainWindow::onSocketConnected()
 
 void MainWindow::onSocketDisconnected()
 {
-    socketReadBuffer_.clear();
-    pendingServerBlockSize_ = 0;
-    shortModeWaitingForResponse_ = false;
+    const bool keepShortModeRunning =
+        sendTimer_->isActive() &&
+        currentSessionMode() == SessionMode::Short;
+
+    resetIncomingFrameState();
+
+    if (!keepShortModeRunning) {
+        periodicMessageText_.clear();
+    }
 
     appendLog(QStringLiteral("Соединение с сервером закрыто"));
     updateConnectionControls();
@@ -844,17 +868,18 @@ void MainWindow::onSocketErrorOccurred(QAbstractSocket::SocketError socketError)
 
 void MainWindow::onSendTimerTimeout()
 {
-    if (ui->long_radioButton->isChecked()) {
+    switch (currentSessionMode()) {
+    case SessionMode::Long:
         if (!sendPacket(periodicMessageText_)) {
-            appendLog(QStringLiteral("Режим 2 остановлен из-за ошибки отправки"));
-            sendTimer_->stop();
-            updateConnectionControls();
+            stopPeriodicMode(QStringLiteral("Режим 2 остановлен из-за ошибки отправки"));
         }
+        break;
 
-        return;
-    }
-
-    if (ui->short_radioButton->isChecked()) {
+    case SessionMode::Short:
         startShortModeCycle();
+        break;
+
+    case SessionMode::Single:
+        break;
     }
 }
